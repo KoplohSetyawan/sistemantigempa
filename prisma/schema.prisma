@@ -1,0 +1,87 @@
+// This is your Prisma schema file
+// Database: PostgreSQL (Neon) — production
+// Database: SQLite — development lokal (auto-switch via src/lib/db-config.ts)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Auto-detect oleh scripts/sync-schema.mjs
+  // Default: sqlite (development) | postgresql (Neon/Vercel)
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Data gempa yang terdeteksi dari BMKG / USGS
+model Earthquake {
+  id           Int      @id @default(autoincrement())
+  sourceId     String   @unique @map("source_id")
+  source       String   @default("BMKG")
+  magnitude    Float
+  depth        Float
+  latitude     Float
+  longitude    Float
+  location     String
+  description  String?
+  felt         Boolean  @default(false)
+  tsunamiRisk  Boolean  @default(false) @map("tsunami_risk")
+  dateTime     DateTime @map("date_time")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([dateTime])
+  @@index([magnitude])
+  @@map("earthquake")
+}
+
+// Zona aman yang direkomendasikan saat gempa terjadi
+model SafeZone {
+  id            Int      @id @default(autoincrement())
+  earthquakeId  Int?     @map("earthquake_id")
+  name          String
+  latitude      Float
+  longitude     Float
+  distanceKm    Float    @map("distance_km")
+  elevationM    Float?   @map("elevation_m")
+  safetyScore   Float    @map("safety_score")
+  zoneType      String   @map("zone_type")
+  reason        String
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([earthquakeId])
+  @@map("safe_zone")
+}
+
+// Alert / peringatan gempa
+model EarthquakeAlert {
+  id           Int      @id @default(autoincrement())
+  earthquakeId Int      @unique @map("earthquake_id")
+  alertLevel   String   @map("alert_level")
+  message      String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("earthquake_alert")
+}
+
+// Berita gempa: video YouTube & siaran pers yang dibuat admin
+model News {
+  id          Int      @id @default(autoincrement())
+  type        String
+  title       String
+  content     String?
+  youtubeId   String?  @map("youtube_id")
+  youtubeUrl  String?  @map("youtube_url")
+  imageUrl    String?  @map("image_url")
+  category    String   @default("umum")
+  author      String   @default("Admin PS-212")
+  isPublished Boolean  @default(true) @map("is_published")
+  pinned      Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([type])
+  @@index([isPublished])
+  @@index([createdAt])
+  @@map("news")
+}

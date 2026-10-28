@@ -1,0 +1,949 @@
+     1→'use client'
+     2→
+     3→import dynamic from 'next/dynamic'
+     4→import { useCallback, useEffect, useState } from 'react'
+     5→import { Button } from '@/components/ui/button'
+     6→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+     7→import { Badge } from '@/components/ui/badge'
+     8→import { Skeleton } from '@/components/ui/skeleton'
+     9→import { ScrollArea } from '@/components/ui/scroll-area'
+    10→import { Progress } from '@/components/ui/progress'
+    11→import { Separator } from '@/components/ui/separator'
+    12→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    13→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    14→import {
+    15→  Activity,
+    16→  AlertTriangle,
+    17→  Clock,
+    18→  Compass,
+    19→  Gauge,
+    20→  Globe2,
+    21→  Loader2,
+    22→  MapPin,
+    23→  Mountain,
+    24→  Radio,
+    25→  RefreshCw,
+    26→  Satellite,
+    27→  Shield,
+    28→  ShieldCheck,
+    29→  Siren,
+    30→  TrendingUp,
+    31→  Waves,
+    32→  Zap,
+    33→} from 'lucide-react'
+    34→import { toast } from 'sonner'
+    35→
+    36→// Dynamic import map (client-only, no SSR)
+    37→const EarthquakeMap = dynamic(() => import('@/components/earthquake-map'), {
+    38→  ssr: false,
+    39→  loading: () => (
+    40→    <div className="h-[500px] w-full rounded-lg bg-slate-900 animate-pulse flex items-center justify-center">
+    41→      <div className="text-slate-400 flex flex-col items-center gap-2">
+    42→        <Satellite className="h-8 w-8 animate-pulse" />
+    43→        <span className="text-sm">Memuat peta satelit...</span>
+    44→      </div>
+    45→    </div>
+    46→  ),
+    47→})
+    48→
+    49→interface EarthquakeData {
+    50→  sourceId: string
+    51→  source: string
+    52→  magnitude: number
+    53→  depth: number
+    54→  latitude: number
+    55→  longitude: number
+    56→  location: string
+    57→  description?: string
+    58→  felt: boolean
+    59→  tsunamiRisk: boolean
+    60→  dateTime: string
+    61→}
+    62→
+    63→interface SafeZone {
+    64→  name: string
+    65→  latitude: number
+    66→  longitude: number
+    67→  distanceKm: number
+    68→  elevationM?: number
+    69→  safetyScore: number
+    70→  zoneType: string
+    71→  reason: string
+    72→}
+    73→
+    74→interface ImpactZone {
+    75→  name: string
+    76→  radius: number
+    77→  color: string
+    78→  label: string
+    79→}
+    80→
+    81→interface SafeZonesResponse {
+    82→  earthquake: EarthquakeData
+    83→  safeZones: SafeZone[]
+    84→  impactZones: ImpactZone[]
+    85→  aiAdvice: string
+    86→}
+    87→
+    88→interface AlertData {
+    89→  hasActiveAlert: boolean
+    90→  primaryAlert: (EarthquakeData & { alertLevel: string; alertColor: string; alertLabel: string; message: string }) | null
+    91→  alerts: Array<EarthquakeData & { alertLevel: string; alertColor: string; alertLabel: string; message: string }>
+    92→}
+    93→
+    94→function getMagColor(mag: number): string {
+    95→  if (mag >= 7) return '#dc2626'
+    96→  if (mag >= 6) return '#ea580c'
+    97→  if (mag >= 5) return '#ca8a04'
+    98→  if (mag >= 4) return '#65a30d'
+    99→  return '#0891b2'
+   100→}
+   101→
+   102→function getMagLabel(mag: number): string {
+   103→  if (mag >= 8) return 'EKSTREM'
+   104→  if (mag >= 7) return 'BERAT'
+   105→  if (mag >= 6) return 'KUAT'
+   106→  if (mag >= 5) return 'SEDANG'
+   107→  if (mag >= 4) return 'RINGAN'
+   108→  return 'MINOR'
+   109→}
+   110→
+   111→function timeAgo(isoDate: string): string {
+   112→  const diff = Date.now() - new Date(isoDate).getTime()
+   113→  const mins = Math.floor(diff / 60000)
+   114→  if (mins < 1) return 'Baru saja'
+   115→  if (mins < 60) return `${mins} menit lalu`
+   116→  const hrs = Math.floor(mins / 60)
+   117→  if (hrs < 24) return `${hrs} jam lalu`
+   118→  const days = Math.floor(hrs / 24)
+   119→  return `${days} hari lalu`
+   120→}
+   121→
+   122→export default function Home() {
+   123→  const [latest, setLatest] = useState<EarthquakeData | null>(null)
+   124→  const [earthquakeList, setEarthquakeList] = useState<EarthquakeData[]>([])
+   125→  const [safeZonesData, setSafeZonesData] = useState<SafeZonesResponse | null>(null)
+   126→  const [alertData, setAlertData] = useState<AlertData | null>(null)
+   127→  const [loadingLatest, setLoadingLatest] = useState(true)
+   128→  const [loadingList, setLoadingList] = useState(true)
+   129→  const [loadingSafeZones, setLoadingSafeZones] = useState(false)
+   130→  const [loadingAlerts, setLoadingAlerts] = useState(true)
+   131→  const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+   132→
+   133→  // Fetch latest earthquake
+   134→  const fetchLatest = useCallback(async () => {
+   135→    setLoadingLatest(true)
+   136→    try {
+   137→      const res = await fetch('/api/earthquakes/latest', { cache: 'no-store' })
+   138→      const json = await res.json()
+   139→      if (json.success) {
+   140→        setLatest(json.data)
+   141→      }
+   142→    } catch (e) {
+   143→      console.error(e)
+   144→    } finally {
+   145→      setLoadingLatest(false)
+   146→      setLastUpdate(new Date())
+   147→    }
+   148→  }, [])
+   149→
+   150→  // Fetch earthquake list
+   151→  const fetchList = useCallback(async () => {
+   152→    setLoadingList(true)
+   153→    try {
+   154→      const res = await fetch('/api/earthquakes/list?type=all', { cache: 'no-store' })
+   155→      const json = await res.json()
+   156→      if (json.success) {
+   157→        setEarthquakeList(json.data)
+   158→      }
+   159→    } catch (e) {
+   160→      console.error(e)
+   161→    } finally {
+   162→      setLoadingList(false)
+   163→    }
+   164→  }, [])
+   165→
+   166→  // Fetch alerts
+   167→  const fetchAlerts = useCallback(async () => {
+   168→    setLoadingAlerts(true)
+   169→    try {
+   170→      const res = await fetch('/api/alerts', { cache: 'no-store' })
+   171→      const json = await res.json()
+   172→      if (json.success) {
+   173→        setAlertData(json.data)
+   174→      }
+   175→    } catch (e) {
+   176→      console.error(e)
+   177→    } finally {
+   178→      setLoadingAlerts(false)
+   179→    }
+   180→  }, [])
+   181→
+   182→  // Fetch safe zones (with AI)
+   183→  const fetchSafeZones = useCallback(
+   184→    async (eq?: EarthquakeData) => {
+   185→      setLoadingSafeZones(true)
+   186→      try {
+   187→        const res = await fetch('/api/safe-zones', {
+   188→          method: 'POST',
+   189→          headers: { 'Content-Type': 'application/json' },
+   190→          body: JSON.stringify({ earthquake: eq || latest }),
+   191→        })
+   192→        const json = await res.json()
+   193→        if (json.success) {
+   194→          setSafeZonesData(json.data)
+   195→          toast.success('Zona aman berhasil dianalisis')
+   196→        } else {
+   197→          toast.error('Gagal mencari zona aman')
+   198→        }
+   199→      } catch (e) {
+   200→        console.error(e)
+   201→        toast.error('Gagal mencari zona aman')
+   202→      } finally {
+   203→        setLoadingSafeZones(false)
+   204→      }
+   205→    },
+   206→    [latest]
+   207→  )
+   208→
+   209→  // Initial load
+   210→  useEffect(() => {
+   211→    fetchLatest()
+   212→    fetchList()
+   213→    fetchAlerts()
+   214→  }, [fetchLatest, fetchList, fetchAlerts])
+   215→
+   216→  // Auto-fetch safe zones when latest earthquake changes
+   217→  useEffect(() => {
+   218→    if (latest) {
+   219→      fetchSafeZones(latest)
+   220→    }
+   221→  }, [latest, fetchSafeZones])
+   222→
+   223→  // Auto-refresh every 60 seconds
+   224→  useEffect(() => {
+   225→    const interval = setInterval(() => {
+   226→      fetchLatest()
+   227→      fetchList()
+   228→      fetchAlerts()
+   229→    }, 60000)
+   230→    return () => clearInterval(interval)
+   231→  }, [fetchLatest, fetchList, fetchAlerts])
+   232→
+   233→  const handleRefreshAll = () => {
+   234→    fetchLatest()
+   235→    fetchList()
+   236→    fetchAlerts()
+   237→    if (latest) fetchSafeZones(latest)
+   238→    toast.success('Memperbarui data gempa...')
+   239→  }
+   240→
+   241→  const currentEq = safeZonesData?.earthquake || latest
+   242→  const hasActiveAlert = alertData?.hasActiveAlert && currentEq && currentEq.magnitude >= 5.0
+   243→
+   244→  return (
+   245→    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
+   246→      {/* Inline style untuk custom scrollbar */}
+   247→      <style>{`
+   248→        ::-webkit-scrollbar { width: 8px; height: 8px; }
+   249→        ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+   250→        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+   251→        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+   252→      `}</style>
+   253→
+   254→      {/* Header */}
+   255→      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
+   256→        <div className="container mx-auto px-4 py-3 flex items-center justify-between gap-4">
+   257→          <div className="flex items-center gap-3">
+   258→            <div className="relative">
+   259→              <div className="absolute inset-0 bg-red-500/30 rounded-full blur-md animate-pulse" />
+   260→              <div className="relative h-10 w-10 rounded-full bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center shadow-lg">
+   261→                <Activity className="h-5 w-5 text-white" />
+   262→              </div>
+   263→            </div>
+   264→            <div>
+   265→              <h1 className="text-lg sm:text-xl font-bold tracking-tight flex items-center gap-2">
+   266→                Sistem Anti-Gempa
+   267→                <Badge variant="outline" className="border-red-500/50 text-red-400 bg-red-500/10">
+   268→                  <span className="relative flex h-2 w-2 mr-1">
+   269→                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+   270→                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+   271→                  </span>
+   272→                  LIVE
+   273→                </Badge>
+   274→              </h1>
+   275→              <p className="text-[11px] sm:text-xs text-slate-400">
+   276→                BMKG • USGS • Pemantauan Real-time Indonesia
+   277→              </p>
+   278→            </div>
+   279→          </div>
+   280→
+   281→          <div className="flex items-center gap-2">
+   282→            <div className="hidden sm:flex flex-col items-end text-xs text-slate-400">
+   283→              <span className="flex items-center gap-1">
+   284→                <Clock className="h-3 w-3" />
+   285→                Update: {lastUpdate.toLocaleTimeString('id-ID')}
+   286→              </span>
+   287→              <span>Auto-refresh 60 detik</span>
+   288→            </div>
+   289→            <Button
+   290→              size="sm"
+   291→              variant="outline"
+   292→              onClick={handleRefreshAll}
+   293→              className="border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:text-white"
+   294→            >
+   295→              <RefreshCw className="h-4 w-4 mr-1" />
+   296→              Refresh
+   297→            </Button>
+   298→          </div>
+   299→        </div>
+   300→      </header>
+   301→
+   302→      {/* Alert Banner */}
+   303→      {hasActiveAlert && alertData?.primaryAlert && (
+   304→        <div
+   305→          className="border-b animate-in slide-in-from-top"
+   306→          style={{ backgroundColor: alertData.primaryAlert.alertColor + '20', borderColor: alertData.primaryAlert.alertColor + '60' }}
+   307→        >
+   308→          <div className="container mx-auto px-4 py-3 flex items-center gap-3">
+   309→            <div
+   310→              className="h-10 w-10 rounded-full flex items-center justify-center flex-shrink-0 animate-pulse"
+   311→              style={{ backgroundColor: alertData.primaryAlert.alertColor }}
+   312→            >
+   313→              <Siren className="h-5 w-5 text-white" />
+   314→            </div>
+   315→            <div className="flex-1 min-w-0">
+   316→              <p className="font-bold text-sm sm:text-base" style={{ color: alertData.primaryAlert.alertColor }}>
+   317→                ⚠ PERINGATAN GEMPA {alertData.primaryAlert.alertLabel}
+   318→              </p>
+   319→              <p className="text-xs sm:text-sm text-slate-200 truncate">
+   320→                Gempa M{alertData.primaryAlert.magnitude} • {alertData.primaryAlert.location} •{' '}
+   321→                {timeAgo(alertData.primaryAlert.dateTime)}
+   322→                {alertData.primaryAlert.tsunamiRisk && (
+   323→                  <span className="text-red-300 font-semibold"> • POTENSI TSUNAMI</span>
+   324→                )}
+   325→              </p>
+   326→            </div>
+   327→            <Badge
+   328→              className="hidden sm:inline-flex"
+   329→              style={{ backgroundColor: alertData.primaryAlert.alertColor, color: '#fff' }}
+   330→            >
+   331→              M{alertData.primaryAlert.magnitude}
+   332→            </Badge>
+   333→          </div>
+   334→        </div>
+   335→      )}
+   336→
+   337→      {/* Main content */}
+   338→      <main className="flex-1 container mx-auto px-4 py-6">
+   339→        {/* Stats row */}
+   340→        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+   341→          <StatCard
+   342→            icon={<Zap className="h-5 w-5" />}
+   343→            label="Gempa Terbaru"
+   344→            value={loadingLatest ? '...' : latest ? `M${latest.magnitude.toFixed(1)}` : '-'}
+   345→            sub={latest ? latest.location.slice(0, 20) : 'Memuat...'}
+   346→            color="text-red-400"
+   347→            bgColor="bg-red-500/10"
+   348→          />
+   349→          <StatCard
+   350→            icon={<TrendingUp className="h-5 w-5" />}
+   351→            label="Total Tercatat (24j)"
+   352→            value={loadingList ? '...' : `${earthquakeList.length}`}
+   353→            sub="Gempa terdeteksi"
+   354→            color="text-amber-400"
+   355→            bgColor="bg-amber-500/10"
+   356→          />
+   357→          <StatCard
+   358→            icon={<Waves className="h-5 w-5" />}
+   359→            label="Risiko Tsunami"
+   360→            value={
+   361→              loadingLatest
+   362→                ? '...'
+   363→                : latest?.tsunamiRisk
+   364→                  ? 'WASPADA'
+   365→                  : 'AMAN'
+   366→            }
+   367→            sub={latest?.tsunamiRisk ? 'Potensi tinggi' : 'Tidak ada potensi'}
+   368→            color={latest?.tsunamiRisk ? 'text-orange-400' : 'text-emerald-400'}
+   369→            bgColor={latest?.tsunamiRisk ? 'bg-orange-500/10' : 'bg-emerald-500/10'}
+   370→          />
+   371→          <StatCard
+   372→            icon={<ShieldCheck className="h-5 w-5" />}
+   373→            label="Zona Aman Ditemukan"
+   374→            value={safeZonesData ? `${safeZonesData.safeZones.length}` : '...'}
+   375→            sub={safeZonesData ? 'Lokasi evakuasi' : 'Menganalisis...'}
+   376→            color="text-emerald-400"
+   377→            bgColor="bg-emerald-500/10"
+   378→          />
+   379→        </div>
+   380→
+   381→        {/* Main grid: Map + Side panels */}
+   382→        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+   383→          {/* Map column */}
+   384→          <div className="lg:col-span-2 space-y-4">
+   385→            <Card className="border-slate-800 bg-slate-900/60 backdrop-blur">
+   386→              <CardHeader className="pb-3">
+   387→                <div className="flex items-center justify-between">
+   388→                  <div>
+   389→                    <CardTitle className="flex items-center gap-2 text-base">
+   390→                      <Satellite className="h-5 w-5 text-emerald-400" />
+   391→                      Peta Satelit Gempa
+   392→                    </CardTitle>
+   393→                    <CardDescription className="text-slate-400 text-xs">
+   394→                      Citra satelit Esri • Episentrum & zona aman
+   395→                    </CardDescription>
+   396→                  </div>
+   397→                  {currentEq && (
+   398→                    <Badge
+   399→                      className="font-mono"
+   400→                      style={{ backgroundColor: getMagColor(currentEq.magnitude), color: '#fff' }}
+   401→                    >
+   402→                      M{currentEq.magnitude.toFixed(1)}
+   403→                    </Badge>
+   404→                  )}
+   405→                </div>
+   406→              </CardHeader>
+   407→              <CardContent className="p-2 sm:p-4">
+   408→                <EarthquakeMap
+   409→                  earthquake={
+   410→                    currentEq
+   411→                      ? {
+   412→                          latitude: currentEq.latitude,
+   413→                          longitude: currentEq.longitude,
+   414→                          magnitude: currentEq.magnitude,
+   415→                          location: currentEq.location,
+   416→                          depth: currentEq.depth,
+   417→                          dateTime: currentEq.dateTime,
+   418→                          source: currentEq.source,
+   419→                        }
+   420→                      : null
+   421→                  }
+   422→                  safeZones={safeZonesData?.safeZones || []}
+   423→                  impactZones={safeZonesData?.impactZones || []}
+   424→                  height="500px"
+   425→                />
+   426→                {/* Legend */}
+   427→                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-3 px-1 text-xs text-slate-400">
+   428→                  <span className="flex items-center gap-1.5">
+   429→                    <span className="h-3 w-3 rounded-full bg-red-500 ring-2 ring-red-300/50" />
+   430→                    Episentrum
+   431→                  </span>
+   432→                  <span className="flex items-center gap-1.5">
+   433→                    <span className="h-3 w-3 rounded-full bg-emerald-600" />
+   434→                    Zona Aman
+   435→                  </span>
+   436→                  <span className="flex items-center gap-1.5">
+   437→                    <span className="h-3 w-3 rounded-full border border-dashed border-red-500" />
+   438→                    Zona Dampak
+   439→                  </span>
+   440→                  <span className="ml-auto text-slate-500">Sumber: {currentEq?.source || '-'}</span>
+   441→                </div>
+   442→              </CardContent>
+   443→            </Card>
+   444→
+   445→            {/* Latest earthquake details */}
+   446→            <Card className="border-slate-800 bg-slate-900/60 backdrop-blur">
+   447→              <CardHeader className="pb-3">
+   448→                <CardTitle className="flex items-center gap-2 text-base">
+   449→                  <Radio className="h-5 w-5 text-red-400" />
+   450→                  Detail Gempa Terbaru
+   451→                </CardTitle>
+   452→              </CardHeader>
+   453→              <CardContent>
+   454→                {loadingLatest && !latest ? (
+   455→                  <div className="space-y-3">
+   456→                    <Skeleton className="h-6 w-full bg-slate-800" />
+   457→                    <Skeleton className="h-6 w-full bg-slate-800" />
+   458→                    <Skeleton className="h-6 w-full bg-slate-800" />
+   459→                  </div>
+   460→                ) : currentEq ? (
+   461→                  <div className="space-y-4">
+   462→                    <div className="flex items-start justify-between gap-3 flex-wrap">
+   463→                      <div>
+   464→                        <div className="flex items-center gap-2 mb-1">
+   465→                          <Badge
+   466→                            className="text-sm font-bold"
+   467→                            style={{ backgroundColor: getMagColor(currentEq.magnitude), color: '#fff' }}
+   468→                          >
+   469→                            M {currentEq.magnitude.toFixed(1)}
+   470→                          </Badge>
+   471→                          <Badge variant="outline" className="border-slate-600 text-slate-300">
+   472→                            {getMagLabel(currentEq.magnitude)}
+   473→                          </Badge>
+   474→                          {currentEq.tsunamiRisk && (
+   475→                            <Badge className="bg-orange-600 hover:bg-orange-600 text-white">
+   476→                              <Waves className="h-3 w-3 mr-1" />
+   477→                              Tsunami
+   478→                            </Badge>
+   479→                          )}
+   480→                          {currentEq.felt && (
+   481→                            <Badge className="bg-yellow-600 hover:bg-yellow-600 text-white">
+   482→                              <AlertTriangle className="h-3 w-3 mr-1" />
+   483→                              Dirasakan
+   484→                            </Badge>
+   485→                          )}
+   486→                        </div>
+   487→                        <p className="text-sm font-semibold text-slate-100">
+   488→                          {currentEq.location}
+   489→                        </p>
+   490→                      </div>
+   491→                      <span className="text-xs text-slate-400 flex items-center gap-1">
+   492→                        <Clock className="h-3 w-3" />
+   493→                        {timeAgo(currentEq.dateTime)}
+   494→                      </span>
+   495→                    </div>
+   496→
+   497→                    <Separator className="bg-slate-800" />
+   498→
+   499→                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+   500→                      <DetailItem
+   501→                        icon={<Gauge className="h-4 w-4" />}
+   502→                        label="Magnitudo"
+   503→                        value={`${currentEq.magnitude.toFixed(1)}`}
+   504→                        color={getMagColor(currentEq.magnitude)}
+   505→                      />
+   506→                      <DetailItem
+   507→                        icon={<Mountain className="h-4 w-4" />}
+   508→                        label="Kedalaman"
+   509→                        value={`${currentEq.depth.toFixed(0)} km`}
+   510→                      />
+   511→                      <DetailItem
+   512→                        icon={<MapPin className="h-4 w-4" />}
+   513→                        label="Latitude"
+   514→                        value={`${currentEq.latitude.toFixed(3)}°`}
+   515→                      />
+   516→                      <DetailItem
+   517→                        icon={<MapPin className="h-4 w-4" />}
+   518→                        label="Longitude"
+   519→                        value={`${currentEq.longitude.toFixed(3)}°`}
+   520→                      />
+   521→                    </div>
+   522→
+   523→                    {currentEq.description && (
+   524→                      <div className="rounded-lg bg-slate-800/50 border border-slate-700/50 p-3">
+   525→                        <p className="text-xs text-slate-400 mb-1 flex items-center gap-1">
+   526→                          <Compass className="h-3 w-3" />
+   527→                          Informasi
+   528→                        </p>
+   529→                        <p className="text-sm text-slate-200">{currentEq.description}</p>
+   530→                      </div>
+   531→                    )}
+   532→
+   533→                    <Button
+   534→                      onClick={() => fetchSafeZones(currentEq)}
+   535→                      disabled={loadingSafeZones}
+   536→                      className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white"
+   537→                    >
+   538→                      {loadingSafeZones ? (
+   539→                        <>
+   540→                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+   541→                          Mencari Zona Aman...
+   542→                        </>
+   543→                      ) : (
+   544→                        <>
+   545→                          <Shield className="h-4 w-4 mr-2" />
+   546→                          Cari Zona Aman dari Gempa Ini
+   547→                        </>
+   548→                      )}
+   549→                    </Button>
+   550→                  </div>
+   551→                ) : (
+   552→                  <p className="text-sm text-slate-400 text-center py-6">
+   553→                    Tidak ada data gempa tersedia
+   554→                  </p>
+   555→                )}
+   556→              </CardContent>
+   557→            </Card>
+   558→          </div>
+   559→
+   560→          {/* Right column: Safe Zones + AI */}
+   561→          <div className="space-y-4">
+   562→            <Card className="border-slate-800 bg-slate-900/60 backdrop-blur">
+   563→              <CardHeader className="pb-3">
+   564→                <CardTitle className="flex items-center gap-2 text-base">
+   565→                  <Shield className="h-5 w-5 text-emerald-400" />
+   566→                  Zona Aman Prioritas
+   567→                </CardTitle>
+   568→                <CardDescription className="text-slate-400 text-xs">
+   569→                  Lokasi evakuasi terbaik dari episentrum
+   570→                </CardDescription>
+   571→              </CardHeader>
+   572→              <CardContent>
+   573→                {loadingSafeZones && !safeZonesData ? (
+   574→                  <div className="space-y-2">
+   575→                    {[1, 2, 3, 4].map((i) => (
+   576→                      <Skeleton key={i} className="h-16 w-full bg-slate-800" />
+   577→                    ))}
+   578→                  </div>
+   579→                ) : safeZonesData && safeZonesData.safeZones.length > 0 ? (
+   580→                  <ScrollArea className="h-[420px] pr-2">
+   581→                    <div className="space-y-2.5">
+   582→                      {safeZonesData.safeZones.map((zone, idx) => (
+   583→                        <div
+   584→                          key={`${zone.name}-${idx}`}
+   585→                          className="rounded-lg border border-slate-700/60 bg-slate-800/40 p-3 hover:bg-slate-800/70 transition-colors"
+   586→                        >
+   587→                          <div className="flex items-start justify-between gap-2 mb-1.5">
+   588→                            <div className="flex items-center gap-2 min-w-0">
+   589→                              <span
+   590→                                className="flex-shrink-0 h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold text-white"
+   591→                                style={{
+   592→                                  backgroundColor:
+   593→                                    zone.safetyScore >= 70
+   594→                                      ? '#16a34a'
+   595→                                      : zone.safetyScore >= 50
+   596→                                        ? '#ca8a04'
+   597→                                        : '#ea580c',
+   598→                                }}
+   599→                              >
+   600→                                {idx + 1}
+   601→                              </span>
+   602→                              <span className="font-semibold text-sm truncate">{zone.name}</span>
+   603→                            </div>
+   604→                            <Badge
+   605→                              variant="outline"
+   606→                              className={
+   607→                                zone.safetyScore >= 70
+   608→                                  ? 'border-emerald-500/50 text-emerald-400'
+   609→                                  : zone.safetyScore >= 50
+   610→                                    ? 'border-yellow-500/50 text-yellow-400'
+   611→                                    : 'border-orange-500/50 text-orange-400'
+   612→                              }
+   613→                            >
+   614→                              {zone.safetyScore}/100
+   615→                            </Badge>
+   616→                          </div>
+   617→                          <Progress
+   618→                            value={zone.safetyScore}
+   619→                            className="h-1.5 mb-2"
+   620→                            style={{
+   621→                              background: 'rgba(255,255,255,0.1)',
+   622→                            }}
+   623→                          />
+   624→                          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-slate-400">
+   625→                            <span className="flex items-center gap-1">
+   626→                              <Compass className="h-3 w-3" />
+   627→                              {zone.distanceKm.toFixed(0)} km
+   628→                            </span>
+   629→                            {zone.elevationM !== undefined && (
+   630→                              <span className="flex items-center gap-1">
+   631→                                <Mountain className="h-3 w-3" />
+   632→                                {zone.elevationM} m
+   633→                              </span>
+   634→                            )}
+   635→                            <span className="flex items-center gap-1 capitalize">
+   636→                              <MapPin className="h-3 w-3" />
+   637→                              {zone.zoneType.replace('_', ' ')}
+   638→                            </span>
+   639→                          </div>
+   640→                        </div>
+   641→                      ))}
+   642→                    </div>
+   643→                  </ScrollArea>
+   644→                ) : (
+   645→                  <p className="text-sm text-slate-400 text-center py-6">
+   646→                    Klik "Cari Zona Aman" untuk menganalisis
+   647→                  </p>
+   648→                )}
+   649→              </CardContent>
+   650→            </Card>
+   651→
+   652→            {/* AI Advice */}
+   653→            <Card className="border-slate-800 bg-gradient-to-br from-indigo-950/40 to-slate-900/60 backdrop-blur">
+   654→              <CardHeader className="pb-3">
+   655→                <CardTitle className="flex items-center gap-2 text-base">
+   656→                  <div className="h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+   657→                    <span className="text-white text-xs">AI</span>
+   658→                  </div>
+   659→                  Analisis & Rekomendasi AI
+   660→                </CardTitle>
+   661→              </CardHeader>
+   662→              <CardContent>
+   663→                {loadingSafeZones ? (
+   664→                  <div className="space-y-2">
+   665→                    <Skeleton className="h-4 w-full bg-slate-800" />
+   666→                    <Skeleton className="h-4 w-3/4 bg-slate-800" />
+   667→                    <Skeleton className="h-4 w-full bg-slate-800" />
+   668→                    <Skeleton className="h-4 w-5/6 bg-slate-800" />
+   669→                  </div>
+   670→                ) : safeZonesData?.aiAdvice ? (
+   671→                  <ScrollArea className="h-[280px] pr-2">
+   672→                    <div className="prose prose-sm prose-invert max-w-none">
+   673→                      {safeZonesData.aiAdvice.split('\n').map((line, i) =>
+   674→                        line.trim() ? (
+   675→                          <p key={i} className="text-sm text-slate-200 leading-relaxed mb-2">
+   676→                            {line}
+   677→                          </p>
+   678→                        ) : null
+   679→                      )}
+   680→                    </div>
+   681→                  </ScrollArea>
+   682→                ) : (
+   683→                  <p className="text-sm text-slate-400 text-center py-6">
+   684→                    Analisis AI akan muncul setelah zona aman dianalisis
+   685→                  </p>
+   686→                )}
+   687→              </CardContent>
+   688→            </Card>
+   689→          </div>
+   690→        </div>
+   691→
+   692→        {/* Earthquake History List */}
+   693→        <Card className="border-slate-800 bg-slate-900/60 backdrop-blur">
+   694→          <CardHeader className="pb-3">
+   695→            <div className="flex items-center justify-between">
+   696→              <div>
+   697→                <CardTitle className="flex items-center gap-2 text-base">
+   698→                  <Globe2 className="h-5 w-5 text-cyan-400" />
+   699→                  Riwayat Gempa Terkini
+   700→                </CardTitle>
+   701→                <CardDescription className="text-slate-400 text-xs">
+   702→                  Data dari BMKG & USGS • {earthquakeList.length} gempa tercatat
+   703→                </CardDescription>
+   704→              </div>
+   705→            </div>
+   706→          </CardHeader>
+   707→          <CardContent>
+   708→            <Tabs defaultValue="all" className="w-full">
+   709→              <TabsList className="bg-slate-800/50 border border-slate-700">
+   710→                <TabsTrigger value="all" className="data-[state=active]:bg-slate-700">
+   711→                  Semua
+   712→                </TabsTrigger>
+   713→                <TabsTrigger value="significant" className="data-[state=active]:bg-slate-700">
+   714→                  M ≥ 5.0
+   715→                </TabsTrigger>
+   716→                <TabsTrigger value="felt" className="data-[state=active]:bg-slate-700">
+   717→                  Dirasakan
+   718→                </TabsTrigger>
+   719→              </TabsList>
+   720→
+   721→              <TabsContent value="all" className="mt-4">
+   722→                <EarthquakeList
+   723→                  earthquakes={earthquakeList}
+   724→                  loading={loadingList}
+   725→                  onSelect={(eq) => fetchSafeZones(eq)}
+   726→                />
+   727→              </TabsContent>
+   728→              <TabsContent value="significant" className="mt-4">
+   729→                <EarthquakeList
+   730→                  earthquakes={earthquakeList.filter((e) => e.magnitude >= 5.0)}
+   731→                  loading={loadingList}
+   732→                  onSelect={(eq) => fetchSafeZones(eq)}
+   733→                />
+   734→              </TabsContent>
+   735→              <TabsContent value="felt" className="mt-4">
+   736→                <EarthquakeList
+   737→                  earthquakes={earthquakeList.filter((e) => e.felt)}
+   738→                  loading={loadingList}
+   739→                  onSelect={(eq) => fetchSafeZones(eq)}
+   740→                />
+   741→              </TabsContent>
+   742→            </Tabs>
+   743→          </CardContent>
+   744→        </Card>
+   745→
+   746→        {/* Impact zones info */}
+   747→        {safeZonesData?.impactZones && safeZonesData.impactZones.length > 0 && (
+   748→          <Card className="mt-6 border-slate-800 bg-slate-900/60 backdrop-blur">
+   749→            <CardHeader className="pb-3">
+   750→              <CardTitle className="flex items-center gap-2 text-base">
+   751→                <AlertTriangle className="h-5 w-5 text-orange-400" />
+   752→                Zona Dampak Gempa
+   753→              </CardTitle>
+   754→              <CardDescription className="text-slate-400 text-xs">
+   755→                Estimasi radius dampak berdasarkan magnitudo
+   756→              </CardDescription>
+   757→            </CardHeader>
+   758→            <CardContent>
+   759→              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+   760→                {safeZonesData.impactZones.map((zone, i) => (
+   761→                  <div
+   762→                    key={i}
+   763→                    className="rounded-lg border p-3 text-center"
+   764→                    style={{
+   765→                      borderColor: zone.color + '60',
+   766→                      backgroundColor: zone.color + '15',
+   767→                    }}
+   768→                  >
+   769→                    <div
+   770→                      className="h-10 w-10 rounded-full mx-auto mb-2 flex items-center justify-center"
+   771→                      style={{ backgroundColor: zone.color + '30', border: `2px solid ${zone.color}` }}
+   772→                    >
+   773→                      <span className="text-xs font-bold" style={{ color: zone.color }}>
+   774→                        {zone.radius.toFixed(0)}
+   775→                      </span>
+   776→                    </div>
+   777→                    <p className="text-xs font-semibold text-slate-200">{zone.label}</p>
+   778→                    <p className="text-[11px] text-slate-400">{zone.name}</p>
+   779→                    <p className="text-[11px] text-slate-500 mt-0.5">radius {zone.radius.toFixed(0)} km</p>
+   780→                  </div>
+   781→                ))}
+   782→              </div>
+   783→            </CardContent>
+   784→          </Card>
+   785→        )}
+   786→      </main>
+   787→
+   788→      {/* Footer */}
+   789→      <footer className="mt-auto border-t border-slate-800 bg-slate-950/80 backdrop-blur">
+   790→        <div className="container mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
+   791→          <div className="flex items-center gap-2">
+   792→            <Activity className="h-4 w-4 text-red-500" />
+   793→            <span>Sistem Anti-Gempa • Data BMKG & USGS</span>
+   794→          </div>
+   795→          <div className="flex items-center gap-4">
+   796→            <span className="flex items-center gap-1">
+   797→              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+   798→              Sistem aktif
+   799→            </span>
+   800→            <span>Update otomatis 60 detik</span>
+   801→          </div>
+   802→        </div>
+   803→      </footer>
+   804→    </div>
+   805→  )
+   806→}
+   807→
+   808→// Sub-components
+   809→function StatCard({
+   810→  icon,
+   811→  label,
+   812→  value,
+   813→  sub,
+   814→  color,
+   815→  bgColor,
+   816→}: {
+   817→  icon: React.ReactNode
+   818→  label: string
+   819→  value: string
+   820→  sub: string
+   821→  color: string
+   822→  bgColor: string
+   823→}) {
+   824→  return (
+   825→    <Card className="border-slate-800 bg-slate-900/60 backdrop-blur">
+   826→      <CardContent className="p-3 sm:p-4">
+   827→        <div className="flex items-center gap-3">
+   828→          <div className={`h-9 w-9 sm:h-10 sm:w-10 rounded-lg ${bgColor} flex items-center justify-center ${color}`}>
+   829→            {icon}
+   830→          </div>
+   831→          <div className="min-w-0">
+   832→            <p className="text-[11px] text-slate-400 truncate">{label}</p>
+   833→            <p className={`text-base sm:text-lg font-bold ${color} leading-tight`}>{value}</p>
+   834→            <p className="text-[10px] text-slate-500 truncate">{sub}</p>
+   835→          </div>
+   836→        </div>
+   837→      </CardContent>
+   838→    </Card>
+   839→  )
+   840→}
+   841→
+   842→function DetailItem({
+   843→  icon,
+   844→  label,
+   845→  value,
+   846→  color,
+   847→}: {
+   848→  icon: React.ReactNode
+   849→  label: string
+   850→  value: string
+   851→  color?: string
+   852→}) {
+   853→  return (
+   854→    <div className="rounded-lg bg-slate-800/40 border border-slate-700/40 p-2.5">
+   855→      <p className="text-[11px] text-slate-400 flex items-center gap-1 mb-0.5">
+   856→        {icon}
+   857→        {label}
+   858→      </p>
+   859→      <p className="text-sm font-bold" style={color ? { color } : undefined}>
+   860→        {value}
+   861→      </p>
+   862→    </div>
+   863→  )
+   864→}
+   865→
+   866→function EarthquakeList({
+   867→  earthquakes,
+   868→  loading,
+   869→  onSelect,
+   870→}: {
+   871→  earthquakes: EarthquakeData[]
+   872→  loading: boolean
+   873→  onSelect: (eq: EarthquakeData) => void
+   874→}) {
+   875→  if (loading) {
+   876→    return (
+   877→      <div className="space-y-2">
+   878→        {[1, 2, 3, 4, 5].map((i) => (
+   879→          <Skeleton key={i} className="h-14 w-full bg-slate-800" />
+   880→        ))}
+   881→      </div>
+   882→    )
+   883→  }
+   884→
+   885→  if (earthquakes.length === 0) {
+   886→    return (
+   887→      <p className="text-sm text-slate-400 text-center py-8">
+   888→        Tidak ada data gempa pada kategori ini
+   889→      </p>
+   890→    )
+   891→  }
+   892→
+   893→  return (
+   894→    <ScrollArea className="h-[400px] pr-2">
+   895→      <div className="space-y-1.5">
+   896→        {earthquakes.map((eq, idx) => {
+   897→          const magColor = getMagColor(eq.magnitude)
+   898→          return (
+   899→            <button
+   900→              key={`${eq.sourceId}-${idx}`}
+   901→              onClick={() => onSelect(eq)}
+   902→              className="w-full text-left rounded-lg border border-slate-700/40 bg-slate-800/30 hover:bg-slate-800/60 hover:border-slate-600 transition-colors p-3 flex items-center gap-3"
+   903→            >
+   904→              <div
+   905→                className="h-11 w-11 rounded-lg flex flex-col items-center justify-center flex-shrink-0"
+   906→                style={{ backgroundColor: magColor + '20', border: `1px solid ${magColor}` }}
+   907→              >
+   908→                <span className="text-[9px] text-slate-400 leading-none">MAG</span>
+   909→                <span className="text-sm font-bold leading-none" style={{ color: magColor }}>
+   910→                  {eq.magnitude.toFixed(1)}
+   911→                </span>
+   912→              </div>
+   913→              <div className="flex-1 min-w-0">
+   914→                <p className="text-sm font-medium text-slate-200 truncate">{eq.location}</p>
+   915→                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400 mt-0.5">
+   916→                  <span className="flex items-center gap-1">
+   917→                    <Clock className="h-3 w-3" />
+   918→                    {timeAgo(eq.dateTime)}
+   919→                  </span>
+   920→                  <span className="flex items-center gap-1">
+   921→                    <Mountain className="h-3 w-3" />
+   922→                    {eq.depth.toFixed(0)} km
+   923→                  </span>
+   924→                  <span>• {eq.source}</span>
+   925→                  {eq.tsunamiRisk && (
+   926→                    <span className="text-orange-400 flex items-center gap-1">
+   927→                      <Waves className="h-3 w-3" />
+   928→                      Tsunami
+   929→                    </span>
+   930→                  )}
+   931→                </div>
+   932→              </div>
+   933→              <div className="flex-shrink-0">
+   934→                {eq.felt ? (
+   935→                  <Badge variant="outline" className="border-yellow-500/50 text-yellow-400 text-[10px]">
+   936→                    Dirasakan
+   937→                  </Badge>
+   938→                ) : (
+   939→                  <span className="text-[10px] text-slate-500">→</span>
+   940→                )}
+   941→              </div>
+   942→            </button>
+   943→          )
+   944→        })}
+   945→      </div>
+   946→    </ScrollArea>
+   947→  )
+   948→}
+   949→
